@@ -104,14 +104,14 @@ A dedicated interactive vitals tracker and calculator:
 - Use Node.js 20 or newer. The Vercel build copies the OCR and barcode assets into the static output; the medicine CSV is served from `public/data/indian_medicine_data.csv`.
 - The browser loads Tailwind CSS and Google Fonts from their public CDNs, so the deployed site needs internet access for those assets. Production use should bundle these assets locally.
 - This project is a demo, not a production patient portal. Accounts, passwords, health details, and cabinet data are stored in browser `localStorage`; demo passwords are included in the client code. Do not deploy it for real patients, personal health information, or clinical decisions without replacing demo authentication/storage, removing demo accounts and credentials, and completing a privacy and clinical safety review.
-- Vercel uses `npm run build` to prepare browser assets and deploys the Node.js API from `api/[...path].js`. The API needs outbound HTTPS access for the optional openFDA lookup.
+- Vercel uses the **Other** framework preset, runs `npm run build` to prepare browser assets, serves `public` as static output, and deploys the API function from `api/[...path].js`. The API needs outbound HTTPS access for the optional openFDA lookup.
 - Optional Gemini image analysis currently uses a key entered in the browser and saved in browser storage. Do not use that feature with a real shared key in a public deployment; move secrets behind a protected server endpoint first.
 
 ### Deploy to Vercel
 
 1. Sign in to Vercel and choose **Add New → Project**.
 2. Import `shaik-241504/mediscanai` from GitHub and deploy the `main` branch.
-3. Keep the repository root as the project root. `vercel.json` sets the build command and static output directory.
+3. Keep the repository root as the project root and the framework preset as **Other**. `vercel.json` sets the framework, build command, and static output directory.
 4. Open the deployment URL Vercel provides. Later pushes to `main` trigger deployments when the GitHub integration is enabled.
 
 1. Open PowerShell or Command Prompt:
