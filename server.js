@@ -5,7 +5,7 @@ const readline = require('node:readline');
 
 const DEFAULT_PORT = parseInt(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const MEDICINE_DATASET_PATH = path.join(__dirname, 'data', 'indian_medicine_data.csv');
+const MEDICINE_DATASET_PATH = path.join(PUBLIC_DIR, 'data', 'indian_medicine_data.csv');
 const TESSERACT_PACKAGE_DIR = path.join(__dirname, 'node_modules', 'tesseract.js', 'dist');
 const TESSERACT_CORE_DIR = path.join(__dirname, 'node_modules', 'tesseract.js-core');
 const TESSERACT_LANGUAGE_PATH = path.join(__dirname, 'node_modules', '@tesseract.js-data', 'eng', '4.0.0_best_int', 'eng.traineddata.gz');
@@ -411,4 +411,8 @@ function startServer(port) {
   });
 }
 
-startServer(DEFAULT_PORT);
+if (require.main === module) {
+  startServer(DEFAULT_PORT);
+}
+
+module.exports = { createServer };

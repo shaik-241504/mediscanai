@@ -1,6 +1,8 @@
 node_modules/
+/public/vendor/
 .env
 .env.*
 !.env.example
 npm-debug.log*
 yarn-debug.log*
+.vercel
