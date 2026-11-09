@@ -499,6 +499,8 @@
             <p id="scanningStatusText" class="text-xs text-cyan-400 mt-1 animate-pulse">Checking pharmacology, dosage safety &amp; expiry records...</p>
           </div>
 
+          <div id="scanErrorMessage" class="hidden p-4 bg-amber-950/50 border border-amber-800 rounded-2xl text-sm text-amber-100" role="alert"></div>
+
           <!-- Scan Results Container -->
           <div id="resultsContainer" class="hidden space-y-6">
 
@@ -507,8 +509,8 @@
               <div class="flex items-center gap-2">
                 <span id="aiSourceBadge" class="text-xs font-bold px-3 py-1 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800">Clinical Knowledge Engine</span>
                 <span class="text-xs text-slate-500">|</span>
-                <span class="text-xs text-emerald-400 font-semibold flex items-center gap-1">
-                  <span>✓</span> High Precision Match
+                <span id="matchConfidenceBadge" class="text-xs text-emerald-400 font-semibold flex items-center gap-1">
+                  Match confidence
                 </span>
               </div>
 
@@ -527,7 +529,7 @@
             </div>
 
             <!-- USER REQUEST: VOICE ANNOUNCEMENT PANEL -->
-            <div class="p-4 bg-gradient-to-r from-slate-900 via-cyan-950/40 to-slate-900 rounded-2xl border border-cyan-800/80 shadow-lg">
+            <div id="voiceAnnouncementPanel" class="p-4 bg-gradient-to-r from-slate-900 via-cyan-950/40 to-slate-900 rounded-2xl border border-cyan-800/80 shadow-lg">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div class="flex items-center gap-3">
                   <div class="w-10 h-10 rounded-xl bg-cyan-950 border border-cyan-800 text-cyan-400 flex items-center justify-center text-lg shadow-sm">
@@ -575,6 +577,59 @@
 
             <!-- Patient Safety Guardian Alerts (Allergies & Conditions check) -->
             <div id="safetyAlertBox" class="space-y-2"></div>
+
+            <div id="datasetMedicineSummary" class="hidden bg-slate-800/90 rounded-3xl border border-slate-700 p-6 shadow-xl space-y-4">
+              <div>
+                <p class="text-[10px] uppercase tracking-wider text-cyan-300 font-bold">Matched medicine from dataset</p>
+                <h2 id="datasetMedicineName" class="text-2xl font-extrabold text-white mt-1"></h2>
+                <p id="datasetMedicineComposition" class="text-sm text-slate-300 mt-2"></p>
+              </div>
+              <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div><dt class="text-slate-400">Strength</dt><dd id="datasetMedicineStrength" class="text-white font-semibold mt-1"></dd></div>
+                <div><dt class="text-slate-400">Pack</dt><dd id="datasetMedicinePack" class="text-white font-semibold mt-1"></dd></div>
+                <div><dt class="text-slate-400">Manufacturer</dt><dd id="datasetMedicineManufacturer" class="text-white font-semibold mt-1"></dd></div>
+                <div><dt class="text-slate-400">Listed price</dt><dd id="datasetMedicinePrice" class="text-white font-semibold mt-1"></dd></div>
+                <div><dt class="text-slate-400">Expiry date on package</dt><dd id="datasetMedicineExpiry" class="text-white font-semibold mt-1"></dd></div>
+              </dl>
+              <section class="space-y-3 rounded-2xl border border-cyan-800 bg-slate-900 p-4" aria-labelledby="accessibleMedicineHeading">
+                <h3 id="accessibleMedicineHeading" class="text-lg font-bold text-white">Listen in your language</h3>
+                <label for="medicineLanguageSelect" class="block text-base font-semibold text-slate-200">Choose a language</label>
+                <select id="medicineLanguageSelect" class="w-full min-h-12 rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-lg text-white focus:border-cyan-400 focus:outline-none">
+                  <option value="en-IN">English (India)</option>
+                  <option value="te-IN">తెలుగు (Telugu)</option>
+                  <option value="ta-IN">தமிழ் (Tamil)</option>
+                  <option value="hi-IN">हिन्दी (Hindi)</option>
+                  <option value="kn-IN">ಕನ್ನಡ (Kannada)</option>
+                  <option value="ml-IN">മലയാളം (Malayalam)</option>
+                </select>
+                <p id="accessibleMedicineNarration" class="min-h-24 rounded-xl bg-slate-800 p-4 text-xl leading-relaxed text-white" aria-live="polite"></p>
+                <div class="flex flex-wrap gap-3">
+                  <button id="accessibleMedicineListenBtn" type="button" class="min-h-12 rounded-xl bg-cyan-600 px-5 py-3 text-lg font-bold text-white hover:bg-cyan-500">🔊 Listen to summary</button>
+                  <button id="accessibleMedicineStopBtn" type="button" class="min-h-12 rounded-xl border border-slate-600 bg-slate-800 px-5 py-3 text-lg font-bold text-white hover:bg-slate-700">Stop</button>
+                </div>
+                <p id="accessibleMedicineVoiceStatus" class="text-sm leading-relaxed text-slate-300" role="status">Checking for a speech voice in the selected language...</p>
+              </section>
+              <p class="text-[11px] leading-relaxed text-amber-200 bg-amber-950/40 border border-amber-900 rounded-xl p-3">
+                This match uses printed package text, not the tablet's appearance. Any expiry date shown was read from the package photo or its code; check the package yourself if it is missing or unclear. The dataset does not provide dosage advice or a clinical assessment.
+              </p>
+              <div id="datasetQrCodePanel" class="hidden text-xs bg-slate-900 rounded-xl border border-slate-700 p-3">
+                <p class="font-bold text-cyan-300">QR code detected on package</p>
+                <p id="datasetQrCodeText" class="text-slate-300 break-all mt-1"></p>
+              </div>
+              <details class="text-xs text-slate-300 bg-slate-900 rounded-xl border border-slate-700 p-3">
+                <summary class="cursor-pointer font-semibold">Text read from this photo</summary>
+                <p id="datasetOcrText" class="mt-2 whitespace-pre-line break-words"></p>
+              </details>
+              <div id="externalDrugInfo" class="hidden space-y-3 border-t border-slate-700 pt-4">
+                <div>
+                  <h3 class="text-sm font-bold text-white">Drug-label information</h3>
+                  <p class="text-[10px] text-slate-400 mt-1">Source: <a href="https://open.fda.gov/apis/drug/label/" target="_blank" rel="noopener noreferrer" class="text-cyan-300 underline">openFDA drug labels</a>. US ingredient labels may not describe this exact Indian brand or combination.</p>
+                </div>
+                <p id="externalDrugInfoStatus" class="text-xs text-slate-300"></p>
+                <div id="externalDrugInfoSections" class="space-y-3"></div>
+                <p class="text-[10px] leading-relaxed text-amber-200">Label information is for reference only. Confirm medicine use and dose with a licensed pharmacist or doctor.</p>
+              </div>
+            </div>
 
             <!-- Medicine Full Details Card -->
             <div id="medicineResultCard" class="bg-slate-800/90 rounded-3xl border border-slate-700 p-6 shadow-xl space-y-6">
@@ -1428,7 +1483,7 @@
 
       <div class="space-y-3">
         <p class="text-xs text-slate-400 leading-relaxed">
-          The app works out-of-the-box using the <strong>Built-in Clinical Knowledge Base</strong>. You can optionally enter your Gemini API key to recognize any custom medication or real-world prescription image.
+          Demo presets use the built-in medicine information. Medicine package photos are read on this device and matched against the local dataset; prescription reading still requires a Gemini API key.
         </p>
 
         <div>
@@ -1476,6 +1531,8 @@
   <script src="js/health-diary.js"></script>
   <script src="js/speech-helper.js"></script>
   <script src="js/patient-manager.js"></script>
+  <script src="vendor/zxing/zxing-browser.min.js"></script>
+  <script src="vendor/tesseract/tesseract.min.js"></script>
   <script src="js/vision-engine.js"></script>
   <script src="js/app.js"></script>
 </body>

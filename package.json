@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "MedScan AI - Medicine & Prescription Visual Information Assistant",
   "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
@@ -16,5 +19,11 @@
     "vision"
   ],
   "author": "MedScan Team",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@zxing/browser": "^0.2.1",
+    "jsqr": "^1.4.0",
+    "tesseract.js": "^7.0.0"
+  }
 }

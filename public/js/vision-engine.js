@@ -7,6 +7,7 @@ class MedScanVisionEngine {
   constructor() {
     this.apiKey = localStorage.getItem('medscan_gemini_api_key') || '';
     this.selectedModel = localStorage.getItem('medscan_model') || 'gemini-1.5-flash';
+    this.ocrWorkerPromise = null;
   }
 
   setApiKey(key) {
@@ -28,24 +29,181 @@ class MedScanVisionEngine {
    * mode: 'auto' | 'medicine' | 'prescription'
    */
   async analyzeImage(imageDataUrl, mode = 'auto', patientProfile = null) {
-    // If Gemini API Key is provided, use real Gemini Multimodal Vision API
     if (this.apiKey) {
       try {
         const geminiResult = await this.callGeminiVision(imageDataUrl, mode);
         return this.enrichResultWithSafety(geminiResult, patientProfile);
       } catch (err) {
-        console.warn('Gemini API call failed, falling back to local Clinical Engine:', err);
-        // Fallback to local clinical heuristic engine if API fails
-        const fallback = this.heuristicClinicalScan(imageDataUrl, mode);
-        fallback.aiSource = `Local Heuristic Engine (Gemini fallback: ${err.message})`;
-        return this.enrichResultWithSafety(fallback, patientProfile);
+        console.warn('Gemini API call failed; trying on-device medicine recognition:', err);
       }
     }
 
-    // Default to Smart Clinical Heuristic Engine
-    const result = this.heuristicClinicalScan(imageDataUrl, mode);
-    result.aiSource = 'Built-in Clinical Knowledge Engine';
+    const result = await this.analyzeLocally(imageDataUrl, mode);
     return this.enrichResultWithSafety(result, patientProfile);
+  }
+
+  async analyzeLocally(imageDataUrl, mode) {
+    const sampleId = this.detectSampleTag(imageDataUrl);
+    if (sampleId) {
+      const sampleResult = this.heuristicClinicalScan(imageDataUrl, mode);
+      sampleResult.aiSource = 'Built-in Clinical Knowledge Engine';
+      return sampleResult;
+    }
+
+    if (mode === 'prescription') {
+      throw new Error('Reading prescription photos requires a Gemini Vision API key. Medicine package photos can be identified on this device without a key.');
+    }
+
+    const qrCodeText = await this.readQrCode(imageDataUrl);
+    const detectedText = await this.recognizeMedicineText(imageDataUrl);
+    const response = await fetch('/api/medicine-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: [qrCodeText, detectedText].filter(Boolean).join('\n') })
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || `Medicine dataset search failed (${response.status}).`);
+    }
+
+    let drugInfo = null;
+    try {
+      const infoResponse = await fetch('/api/drug-info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ composition: result.medicine.composition })
+      });
+      if (!infoResponse.ok) {
+        throw new Error(`Drug-label lookup failed (${infoResponse.status}).`);
+      }
+      drugInfo = await infoResponse.json();
+    } catch (error) {
+      console.warn('External drug-label lookup failed:', error);
+      drugInfo = { error: 'External drug-label information is currently unavailable.' };
+    }
+
+    const builtInMedicine = this.findBuiltInMedicine(result.medicine);
+    const medicine = {
+      ...result.medicine,
+      genericName: builtInMedicine?.genericName || result.medicine.composition,
+      dosageForm: builtInMedicine?.dosageForm || result.medicine.packSize,
+      category: builtInMedicine?.category || result.medicine.category,
+      indications: builtInMedicine?.indications || [],
+      expiryDate: this.extractExpiryDate(detectedText, qrCodeText),
+      datasetRecord: true,
+      drugInfo
+    };
+    if (qrCodeText) {
+      medicine.qrCodeText = qrCodeText;
+    }
+
+    return {
+      type: 'medicine',
+      confidence: result.confidence,
+      detectedText,
+      aiSource: 'On-device OCR + Indian Medicine Dataset',
+      medicine
+    };
+  }
+
+  async readQrCode(imageDataUrl) {
+    if (!window.ZXingBrowser || !window.ZXing) return '';
+
+    const image = new Image();
+    image.src = imageDataUrl;
+    await image.decode();
+
+    const hints = new Map();
+    hints.set(window.ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      window.ZXing.BarcodeFormat.QR_CODE,
+      window.ZXing.BarcodeFormat.DATA_MATRIX
+    ]);
+    const reader = new window.ZXingBrowser.BrowserMultiFormatReader(hints);
+    try {
+      const code = await reader.decodeFromImageElement(image);
+      return code.getText();
+    } catch (error) {
+      if (error.name === 'NotFoundException' || error.name === 'ChecksumException' || error.name === 'FormatException') {
+        return '';
+      }
+      throw error;
+    } finally {
+      reader.reset();
+    }
+  }
+
+  async recognizeMedicineText(imageDataUrl) {
+    if (!window.Tesseract) {
+      throw new Error('On-device OCR did not load. Restart the app after installing dependencies, then try again.');
+    }
+
+    if (!this.ocrWorkerPromise) {
+      this.ocrWorkerPromise = window.Tesseract.createWorker('eng', 1, {
+        workerPath: '/vendor/tesseract/worker.min.js',
+        corePath: '/vendor/tesseract-core',
+        langPath: '/vendor/tessdata',
+        gzip: true
+      });
+    }
+
+    try {
+      const worker = await this.ocrWorkerPromise;
+      const { data } = await worker.recognize(imageDataUrl);
+      if (!data.text.trim()) {
+        throw new Error('No readable medicine name was found. Try a clear photo of the printed label or blister pack.');
+      }
+      return data.text;
+    } catch (error) {
+      this.ocrWorkerPromise = null;
+      throw error;
+    }
+  }
+
+  findBuiltInMedicine(datasetMedicine) {
+    const datasetName = datasetMedicine.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const datasetComposition = datasetMedicine.composition.toLowerCase();
+    return MEDICINE_DATABASE.find(medicine => {
+      const searchableNames = [medicine.name, ...(medicine.brandNames || [])]
+        .map(name => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
+      return searchableNames.some(name => name && (datasetName.includes(name) || name.includes(datasetName))) ||
+        (medicine.genericName && datasetComposition.includes(medicine.genericName.toLowerCase()));
+    });
+  }
+
+  extractExpiryDate(...packageTexts) {
+    const text = packageTexts.filter(Boolean).join('\n');
+    const expiryMatch = text.match(/\b(?:exp(?:iry)?|use\s*before|use\s*by)(?:\s*(?:date|dt))?\s*[:.]?\s*(\d{1,2}\s*[/-]\s*\d{2,4}|\d{4}\s*[/-]\s*\d{1,2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4})/i);
+    if (expiryMatch) {
+      const date = expiryMatch[1].replace(/\s+/g, '');
+      const numericDate = date.match(/^(\d{1,2})[/-](\d{2,4})$/);
+      if (numericDate) {
+        const month = Number(numericDate[1]);
+        if (month >= 1 && month <= 12) {
+          const year = numericDate[2].length === 2 ? `20${numericDate[2]}` : numericDate[2];
+          return `${numericDate[1].padStart(2, '0')}/${year}`;
+        }
+      }
+
+      const yearFirstDate = date.match(/^(\d{4})[/-](\d{1,2})$/);
+      if (yearFirstDate) {
+        const month = Number(yearFirstDate[2]);
+        if (month >= 1 && month <= 12) {
+          return `${yearFirstDate[2].padStart(2, '0')}/${yearFirstDate[1]}`;
+        }
+      }
+
+      const monthNameDate = date.match(/^([a-z]+)(\d{4})$/i);
+      if (monthNameDate) return `${monthNameDate[1]} ${monthNameDate[2]}`;
+    }
+
+    const gs1Expiry = packageTexts[1]?.match(/(?:\(\s*17\s*\)|17)(\d{6})/);
+    if (gs1Expiry) {
+      const [, year, month] = gs1Expiry[1].match(/^(\d{2})(\d{2})\d{2}$/) || [];
+      if (year && Number(month) >= 1 && Number(month) <= 12) {
+        return `${month}/20${year}`;
+      }
+    }
+    return '';
   }
 
   /**
@@ -185,12 +343,8 @@ The JSON MUST follow this exact schema:
       matchedMed = MEDICINE_DATABASE.find(m => m.id === sampleId);
     }
 
-    // If no direct sample ID, default to first or random realistic match
     if (!matchedMed) {
-      // Pick representative medicine based on a hash of the image
-      const hash = this.simpleHash(imageDataUrl);
-      const index = Math.abs(hash) % MEDICINE_DATABASE.length;
-      matchedMed = MEDICINE_DATABASE[index] || MEDICINE_DATABASE[0];
+      throw new Error('Unable to identify this medicine image locally. Add a Gemini Vision API key in AI Vision Settings or choose a demo preset. No medicine details were inferred.');
     }
 
     return {
@@ -211,15 +365,6 @@ The JSON MUST follow this exact schema:
     if (dataUrl.includes('sample:amlodipine')) return 'amlodipine-5';
     if (dataUrl.includes('sample:rx')) return 'sample-rx';
     return null;
-  }
-
-  simpleHash(str) {
-    let hash = 0;
-    for (let i = 0; i < Math.min(str.length, 500); i++) {
-      hash = ((hash << 5) - hash) + str.charCodeAt(i);
-      hash |= 0;
-    }
-    return hash;
   }
 
   generateSamplePrescription() {

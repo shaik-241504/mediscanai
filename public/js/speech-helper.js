@@ -52,9 +52,17 @@ class SpeechHelper {
     this.currentUtterance.rate = options.rate !== undefined ? options.rate : 0.95; // Slightly slower for clinical clarity
     this.currentUtterance.pitch = options.pitch !== undefined ? options.pitch : 1.0;
 
+    const language = options.lang || 'en-US';
+    const languageCode = language.split('-')[0].toLowerCase();
+    const matchingVoice = this.voices.find(voice => voice.lang.toLowerCase() === language.toLowerCase()) ||
+      (language.toLowerCase() !== 'en-in'
+        ? this.voices.find(voice => voice.lang.toLowerCase().startsWith(`${languageCode}-`))
+        : null);
     if (options.voice) {
       this.currentUtterance.voice = options.voice;
-    } else if (this.selectedVoice) {
+    } else if (matchingVoice) {
+      this.currentUtterance.voice = matchingVoice;
+    } else if (languageCode === 'en' && this.selectedVoice) {
       this.currentUtterance.voice = this.selectedVoice;
     }
 
@@ -86,6 +94,7 @@ class SpeechHelper {
       console.error('Speech synthesis error:', e);
       this.isPlaying = false;
       this.isPaused = false;
+      this.triggerEvent('error', { error: e.error });
       this.triggerEvent('end');
     };
 
@@ -129,8 +138,8 @@ class SpeechHelper {
     }
   }
 
-  triggerEvent(name) {
-    const event = new CustomEvent('speech_' + name, { detail: { helper: this } });
+  triggerEvent(name, detail = {}) {
+    const event = new CustomEvent('speech_' + name, { detail: { helper: this, ...detail } });
     window.dispatchEvent(event);
   }
 

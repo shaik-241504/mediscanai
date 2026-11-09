@@ -17,6 +17,9 @@
 
 ### 2. 💊 Medicine Search & Visual Scanner (Paracetamol Example)
 Scan a photo/strip or look up **Paracetamol / Acetaminophen (Dolo 650)**:
+- Medicine package photos are read with on-device English OCR and matched against the local medicine dataset. Prescription photos still require a Gemini Vision API key. Image OCR happens in the browser; recognized text is sent only to this app's local dataset search endpoint.
+- Package QR and GS1 Data Matrix codes are decoded in the browser when present. Ingredient label information can be requested from the public, no-key [openFDA drug-label API](https://open.fda.gov/apis/drug/label/); those US ingredient labels may not represent the exact Indian brand.
+- For dataset-matched package scans, choose Indian English, Telugu, Tamil, Hindi, Kannada, or Malayalam to hear a simple explanation of common uses and any expiry date read from the package OCR or GS1 code. Unknown uses and unreadable expiry dates are stated clearly rather than guessed. Audio uses the browser/device speech-synthesis voices installed by the user; playback is disabled when the selected language voice is not installed. Indian English requires an `en-IN` speech voice. The summary advises users to follow their doctor’s directions and does not invent a dose.
 - 📅 **Expiry Date & Batch Status**: Detects and displays manufacturing date, expiry date, batch number, and safe validity countdown (e.g., *Exp: 02/2029 • Status: SAFE & VALID*).
 - 🌡️ **Fever & Clinical Uses**: Clear explanation of antipyretic temperature control for viral/bacterial fevers, headaches, migraine, toothache, muscle aches, and post-vaccination soreness.
 - 💧 **How to Use & When to Take**: Detailed oral administration guidelines, water consumption, empty stomach vs with food, and minimum 4-6 hour spacing between doses.
@@ -96,10 +99,19 @@ A dedicated interactive vitals tracker and calculator:
 
 ## 🚀 How to Run the Web Application
 
+### Deployment notes
+
+- Use Node.js 20 or newer. The server reads the hosting platform's `PORT` environment variable and serves the medicine CSV from `data/indian_medicine_data.csv`; include this file in the deployment.
+- The browser loads Tailwind CSS and Google Fonts from their public CDNs, so the deployed site needs internet access for those assets. Production use should bundle these assets locally.
+- This project is a demo, not a production patient portal. Accounts, passwords, health details, and cabinet data are stored in browser `localStorage`; demo passwords are included in the client code. Do not deploy it for real patients, personal health information, or clinical decisions without replacing demo authentication/storage, removing demo accounts and credentials, and completing a privacy and clinical safety review.
+- Run `npm ci`, then `npm start`. The host must provide a persistent Node.js web service with outbound HTTPS access for the optional openFDA lookup.
+- Optional Gemini image analysis currently uses a key entered in the browser and saved in browser storage. Do not use that feature with a real shared key in a public deployment; move secrets behind a protected server endpoint first.
+
 1. Open PowerShell or Command Prompt:
 ```powershell
-cd "C:\Users\Lenovo\.gemini\antigravity\scratch\mediscan-ai"
-node server.js
+cd "C:\Users\Shafiya\MedscanAI"
+npm install
+npm start
 ```
 
 2. Open your web browser and navigate to:
@@ -118,8 +130,10 @@ node server.js
 
 ```
 mediscan-ai/
-├── server.js                      # Node.js HTTP server (zero external dependencies)
+├── server.js                      # Node.js HTTP server and local medicine dataset search
 ├── package.json                   # Project metadata
+├── data/
+│   └── indian_medicine_data.csv   # Normalized medicine catalog, served at /data/indian_medicine_data.csv
 ├── README.md                      # Comprehensive documentation
 └── public/
     ├── index.html                 # Complete 4-tab web application UI
@@ -133,6 +147,6 @@ mediscan-ai/
         ├── health-diary.js        # Calculators for BP, Weight/BMI, Blood Sugar & persistent logs
         ├── speech-helper.js       # Web Speech API voice announcements & audio visualizer
         ├── patient-manager.js     # Stored medicine cabinet CRUD & daily compliance tracking
-        ├── vision-engine.js       # Optical recognition heuristic engine & Gemini API support
+        ├── vision-engine.js       # On-device OCR, medicine matching & Gemini API support
         └── app.js                 # Central controller coordinating all views and user actions
 ```

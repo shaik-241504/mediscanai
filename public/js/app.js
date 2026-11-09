@@ -66,6 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Results & Progress
   const scanningOverlay = document.getElementById('scanningOverlay');
   const scanningStatusText = document.getElementById('scanningStatusText');
+  const scanErrorMessage = document.getElementById('scanErrorMessage');
   const resultsContainer = document.getElementById('resultsContainer');
   const welcomeHero = document.getElementById('welcomeHero');
   const ttsBtn = document.getElementById('ttsBtn');
@@ -75,6 +76,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const voiceSpeakingBadge = document.getElementById('voiceSpeakingBadge');
   const addToCabinetBtn = document.getElementById('addToCabinetBtn');
   const printReportBtn = document.getElementById('printReportBtn');
+  const medicineLanguageSelect = document.getElementById('medicineLanguageSelect');
+  const accessibleMedicineNarration = document.getElementById('accessibleMedicineNarration');
+  const accessibleMedicineListenBtn = document.getElementById('accessibleMedicineListenBtn');
+  const accessibleMedicineStopBtn = document.getElementById('accessibleMedicineStopBtn');
+  const accessibleMedicineVoiceStatus = document.getElementById('accessibleMedicineVoiceStatus');
 
   // Search Elements
   const searchInput = document.getElementById('searchInput');
@@ -138,6 +144,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastScanResult = null;
   let lastLabDiagnosis = null;
   let currentSpeechRate = 1.0;
+  let activeSpeechMode = null;
+  let datasetSpeechPlaybackFailed = false;
   let lastCalculatedBP = null;
   let lastCalculatedBMI = null;
   let lastCalculatedSugar = null;
@@ -394,9 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const preset = window.SAMPLE_PRESETS?.find(s => s.id === presetId);
     if (!preset) return;
 
-    // Set preview
-    const svgString = preset.getSvg();
-    const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+    const dataUrl = window.getSampleDataUrl(presetId);
     showPreview(dataUrl);
 
     // Auto trigger scan
@@ -570,9 +576,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Execute Medicine Scan
   async function executeScan(dataUrl, mode = 'auto') {
+    scanErrorMessage.classList.add('hidden');
     welcomeHero.classList.add('hidden');
     resultsContainer.classList.add('hidden');
     scanningOverlay.classList.remove('hidden');
+    scanningStatusText.textContent = 'Reading the printed label on this device...';
 
     const activeUser = window.authManager.getCurrentUser();
 
@@ -588,31 +596,337 @@ document.addEventListener('DOMContentLoaded', () => {
       displayScanResult(result, activeUser);
     } catch (err) {
       scanningOverlay.classList.add('hidden');
-      alert('Analysis error: ' + err.message);
+      welcomeHero.classList.remove('hidden');
+      scanErrorMessage.textContent = err.message;
+      scanErrorMessage.classList.remove('hidden');
     }
   }
 
   function displayScanResult(result, user) {
     document.getElementById('aiSourceBadge').textContent = result.aiSource || 'Clinical Knowledge Engine';
+    document.getElementById('matchConfidenceBadge').textContent = result.confidence
+      ? `Match confidence: ${Math.round(result.confidence * 100)}%`
+      : 'Match confidence unavailable';
 
     // Render Safety Guardian Alerts
     renderSafetyAlerts(result.safetyAlerts, user);
+    const datasetOnly = Boolean(result.medicine?.datasetRecord);
+    document.getElementById('voiceAnnouncementPanel').classList.toggle('hidden', datasetOnly);
+    addToCabinetBtn.classList.toggle('hidden', datasetOnly);
 
     if (result.type === 'prescription' && result.prescription) {
+      document.getElementById('datasetMedicineSummary').classList.add('hidden');
       document.getElementById('medicineResultCard').classList.add('hidden');
       document.getElementById('prescriptionResultCard').classList.remove('hidden');
       renderPrescriptionDetails(result.prescription);
+    } else if (result.medicine?.datasetRecord) {
+      document.getElementById('prescriptionResultCard').classList.add('hidden');
+      document.getElementById('medicineResultCard').classList.add('hidden');
+      renderDatasetMedicineSummary(result.medicine, result.detectedText);
     } else {
+      document.getElementById('datasetMedicineSummary').classList.add('hidden');
       document.getElementById('prescriptionResultCard').classList.add('hidden');
       document.getElementById('medicineResultCard').classList.remove('hidden');
       renderMedicineDetails(result.medicine);
     }
   }
 
+  function renderDatasetMedicineSummary(medicine, detectedText = '') {
+    document.getElementById('datasetMedicineName').textContent = medicine.name;
+    document.getElementById('datasetMedicineComposition').textContent = `Composition: ${medicine.composition || 'Not listed'}`;
+    document.getElementById('datasetMedicineStrength').textContent = medicine.strength || 'Not listed';
+    document.getElementById('datasetMedicinePack').textContent = medicine.packSize || 'Not listed';
+    document.getElementById('datasetMedicineManufacturer').textContent = medicine.manufacturer || 'Not listed';
+    document.getElementById('datasetMedicinePrice').textContent = medicine.price ? `₹${medicine.price}` : 'Not listed';
+    document.getElementById('datasetMedicineExpiry').textContent = medicine.expiryDate || 'Not readable in photo';
+    const qrPanel = document.getElementById('datasetQrCodePanel');
+    qrPanel.classList.toggle('hidden', !medicine.qrCodeText);
+    if (medicine.qrCodeText) {
+      document.getElementById('datasetQrCodeText').textContent = medicine.qrCodeText;
+    }
+    document.getElementById('datasetOcrText').textContent = detectedText;
+    renderExternalDrugInfo(medicine.drugInfo);
+    renderAccessibleMedicineNarration(medicine);
+    document.getElementById('datasetMedicineSummary').classList.remove('hidden');
+  }
+
+  const medicineUsePhrases = {
+    'en-IN': {
+      feverPain: 'This medicine is used for fever, headache, and body pain.',
+      acidityNausea: 'This medicine may be used for stomach burning, acid coming up, or nausea. Ask your doctor or pharmacist.',
+      acidity: 'This medicine is used to reduce stomach acid and heartburn.',
+      diabetes: 'This medicine is used to help control blood sugar in type 2 diabetes.',
+      infection: 'This antibiotic is used for some bacterial infections. Take it only if prescribed by a doctor.',
+      bloodPressure: 'This medicine is used to lower high blood pressure.',
+      allergy: 'This medicine is used for allergy symptoms like sneezing, a runny nose, and itching.',
+      unknown: 'We do not have information about what this medicine is used for. Ask your doctor or pharmacist.',
+      expiry: 'The expiry date printed on the pack is ',
+      noExpiry: 'We could not read the expiry date from this photo. Please check the pack.',
+      advice: 'Take this medicine only as advised by your doctor.'
+    },
+    'te-IN': {
+      feverPain: 'జ్వరం, తలనొప్పి, ఒంటి నొప్పి తగ్గించడానికి ఈ మందు వాడతారు.',
+      acidityNausea: 'కడుపులో మంట, ఆమ్లం పైకి రావడం లేదా వికారం కోసం డాక్టర్ ఈ మందును సూచించవచ్చు.',
+      acidity: 'కడుపులో మంట, ఆమ్లం పైకి రావడం తగ్గించడానికి ఈ మందు వాడతారు.',
+      diabetes: 'టైప్ 2 మధుమేహంలో రక్తంలో చక్కెర నియంత్రణకు ఈ మందు వాడతారు.',
+      infection: 'కొన్ని బ్యాక్టీరియా ఇన్ఫెక్షన్లకు ఈ యాంటీబయాటిక్ వాడతారు. డాక్టర్ సూచించినప్పుడే వాడండి.',
+      bloodPressure: 'అధిక రక్తపోటును తగ్గించడానికి ఈ మందు వాడతారు.',
+      allergy: 'తుమ్ములు, ముక్కు కారడం, దురద వంటి అలర్జీ లక్షణాలకు ఈ మందు వాడతారు.',
+      unknown: 'ఈ మందు ఎందుకు వాడాలో సమాచారం అందుబాటులో లేదు. డాక్టర్ లేదా ఫార్మసిస్ట్‌ను అడగండి.',
+      expiry: 'ప్యాకెట్‌పై గడువు తేదీ: ',
+      noExpiry: 'ఈ ఫోటోలో గడువు తేదీ చదవలేకపోయాం. ప్యాకెట్‌పై చూసి నిర్ధారించండి.',
+      advice: 'డాక్టర్ చెప్పినట్లే వాడండి.'
+    },
+    'ta-IN': {
+      feverPain: 'காய்ச்சல், தலைவலி, உடல்வலி குறைக்க இந்த மருந்து பயன்படும்.',
+      acidityNausea: 'வயிற்று எரிச்சல், அமிலம் மேலே வருதல் அல்லது குமட்டலுக்கு மருத்துவர் இந்த மருந்தை பரிந்துரைக்கலாம்.',
+      acidity: 'வயிற்று எரிச்சல் மற்றும் அமிலம் மேலே வருவதைக் குறைக்க இந்த மருந்து பயன்படும்.',
+      diabetes: 'வகை 2 நீரிழிவு நோயில் இரத்தச் சர்க்கரையைக் கட்டுப்படுத்த இந்த மருந்து பயன்படும்.',
+      infection: 'சில பாக்டீரியா தொற்றுகளுக்கு இந்த நுண்ணுயிர் எதிர்ப்பு மருந்து பயன்படும். மருத்துவர் சொன்னால் மட்டுமே எடுத்துக்கொள்ளுங்கள்.',
+      bloodPressure: 'உயர் இரத்த அழுத்தத்தைக் குறைக்க இந்த மருந்து பயன்படும்.',
+      allergy: 'தும்மல், மூக்கு ஒழுகுதல், அரிப்பு போன்ற ஒவ்வாமை அறிகுறிகளுக்கு இந்த மருந்து பயன்படும்.',
+      unknown: 'இந்த மருந்து எதற்குப் பயன்படுகிறது என்ற தகவல் இல்லை. மருத்துவர் அல்லது மருந்தாளரிடம் கேளுங்கள்.',
+      expiry: 'பொட்டலத்தில் உள்ள காலாவதி தேதி: ',
+      noExpiry: 'இந்தப் படத்தில் காலாவதி தேதியைப் படிக்க முடியவில்லை. பொட்டலத்தில் தேதியைச் சரிபார்க்கவும்.',
+      advice: 'மருத்துவர் சொன்னபடி மட்டும் எடுத்துக்கொள்ளுங்கள்.'
+    },
+    'hi-IN': {
+      feverPain: 'यह दवा बुखार, सिरदर्द और बदन दर्द में इस्तेमाल होती है।',
+      acidityNausea: 'पेट की जलन, खट्टी डकार या जी मिचलाने के लिए डॉक्टर यह दवा दे सकते हैं।',
+      acidity: 'यह दवा पेट की जलन और खट्टी डकार कम करने में इस्तेमाल होती है।',
+      diabetes: 'यह दवा टाइप 2 मधुमेह में खून की शक्कर नियंत्रित करने के लिए इस्तेमाल होती है।',
+      infection: 'यह एंटीबायोटिक कुछ बैक्टीरिया के संक्रमण में इस्तेमाल होती है। इसे केवल डॉक्टर की सलाह पर लें।',
+      bloodPressure: 'यह दवा बढ़े हुए रक्तचाप को कम करने के लिए इस्तेमाल होती है।',
+      allergy: 'यह दवा छींक, नाक बहने और खुजली जैसी एलर्जी में इस्तेमाल होती है।',
+      unknown: 'यह दवा किसलिए है, इसकी जानकारी उपलब्ध नहीं है। डॉक्टर या फार्मासिस्ट से पूछें।',
+      expiry: 'पैकेट पर लिखी समाप्ति तिथि: ',
+      noExpiry: 'इस तस्वीर में समाप्ति तिथि पढ़ी नहीं जा सकी। पैकेट पर तारीख जाँचें।',
+      advice: 'दवा केवल डॉक्टर की सलाह के अनुसार लें।'
+    },
+    'kn-IN': {
+      feverPain: 'ಜ್ವರ, ತಲೆನೋವು ಮತ್ತು ಮೈ ನೋವು ಕಡಿಮೆ ಮಾಡಲು ಈ ಔಷಧಿ ಬಳಸುತ್ತಾರೆ.',
+      acidityNausea: 'ಹೊಟ್ಟೆಯ ಉರಿ, ಆಮ್ಲ ಮೇಲಕ್ಕೆ ಬರುವುದು ಅಥವಾ ವಾಕರಿಕೆಗೆ ವೈದ್ಯರು ಈ ಔಷಧಿಯನ್ನು ಸೂಚಿಸಬಹುದು.',
+      acidity: 'ಹೊಟ್ಟೆಯ ಉರಿ ಮತ್ತು ಆಮ್ಲ ಮೇಲಕ್ಕೆ ಬರುವುದನ್ನು ಕಡಿಮೆ ಮಾಡಲು ಈ ಔಷಧಿ ಬಳಸುತ್ತಾರೆ.',
+      diabetes: 'ಟೈಪ್ 2 ಮಧುಮೇಹದಲ್ಲಿ ರಕ್ತದ ಸಕ್ಕರೆ ನಿಯಂತ್ರಣಕ್ಕೆ ಈ ಔಷಧಿ ಬಳಸುತ್ತಾರೆ.',
+      infection: 'ಕೆಲವು ಬ್ಯಾಕ್ಟೀರಿಯಾ ಸೋಂಕುಗಳಿಗೆ ಈ ಆಂಟಿಬಯಾಟಿಕ್ ಬಳಸುತ್ತಾರೆ. ವೈದ್ಯರು ಸೂಚಿಸಿದಾಗ ಮಾತ್ರ ತೆಗೆದುಕೊಳ್ಳಿ.',
+      bloodPressure: 'ಹೆಚ್ಚಿನ ರಕ್ತದೊತ್ತಡ ಕಡಿಮೆ ಮಾಡಲು ಈ ಔಷಧಿ ಬಳಸುತ್ತಾರೆ.',
+      allergy: 'ಸೀನು, ಮೂಗು ಸೋರುವುದು ಮತ್ತು ತುರಿಕೆಯಂತಹ ಅಲರ್ಜಿ ಲಕ್ಷಣಗಳಿಗೆ ಈ ಔಷಧಿ ಬಳಸುತ್ತಾರೆ.',
+      unknown: 'ಈ ಔಷಧಿ ಯಾವ ಸಮಸ್ಯೆಗೆ ಎಂಬ ಮಾಹಿತಿ ಇಲ್ಲ. ವೈದ್ಯರು ಅಥವಾ ಔಷಧಿಕಾರರನ್ನು ಕೇಳಿ.',
+      expiry: 'ಪ್ಯಾಕೆಟ್‌ನಲ್ಲಿರುವ ಮುಕ್ತಾಯ ದಿನಾಂಕ: ',
+      noExpiry: 'ಈ ಫೋಟೋದಲ್ಲಿ ಮುಕ್ತಾಯ ದಿನಾಂಕ ಓದಲಾಗಲಿಲ್ಲ. ಪ್ಯಾಕೆಟ್‌ನ ದಿನಾಂಕವನ್ನು ಪರಿಶೀಲಿಸಿ.',
+      advice: 'ವೈದ್ಯರು ಹೇಳಿದಂತೆ ಮಾತ್ರ ತೆಗೆದುಕೊಳ್ಳಿ.'
+    },
+    'ml-IN': {
+      feverPain: 'പനി, തലവേദന, ശരീരവേദന എന്നിവ കുറയ്ക്കാൻ ഈ മരുന്ന് ഉപയോഗിക്കുന്നു.',
+      acidityNausea: 'വയറ്റിലെ എരിച്ചിൽ, ആസിഡ് മുകളിലേക്ക് വരൽ, ഓക്കാനം എന്നിവയ്ക്ക് ഡോക്ടർ ഈ മരുന്ന് നിർദേശിക്കാം.',
+      acidity: 'വയറ്റിലെ എരിച്ചിലും ആസിഡ് മുകളിലേക്ക് വരുന്നതും കുറയ്ക്കാൻ ഈ മരുന്ന് ഉപയോഗിക്കുന്നു.',
+      diabetes: 'ടൈപ്പ് 2 പ്രമേഹത്തിൽ രക്തത്തിലെ പഞ്ചസാര നിയന്ത്രിക്കാൻ ഈ മരുന്ന് ഉപയോഗിക്കുന്നു.',
+      infection: 'ചില ബാക്ടീരിയ അണുബാധകൾക്ക് ഈ ആന്റിബയോട്ടിക് ഉപയോഗിക്കുന്നു. ഡോക്ടർ നിർദേശിച്ചാൽ മാത്രം കഴിക്കുക.',
+      bloodPressure: 'ഉയർന്ന രക്തസമ്മർദം കുറയ്ക്കാൻ ഈ മരുന്ന് ഉപയോഗിക്കുന്നു.',
+      allergy: 'തുമ്മൽ, മൂക്കൊലിപ്പ്, ചൊറിച്ചിൽ തുടങ്ങിയ അലർജി ലക്ഷണങ്ങൾക്ക് ഈ മരുന്ന് ഉപയോഗിക്കുന്നു.',
+      unknown: 'ഈ മരുന്ന് എന്തിനാണെന്ന വിവരം ലഭ്യമല്ല. ഡോക്ടറോടോ ഫാർമസിസ്റ്റിനോടോ ചോദിക്കുക.',
+      expiry: 'പാക്കറ്റിൽ നൽകിയ കാലാവധി തീയതി: ',
+      noExpiry: 'ഈ ചിത്രത്തിൽ കാലാവധി തീയതി വായിക്കാനായില്ല. പാക്കറ്റിലെ തീയതി പരിശോധിക്കുക.',
+      advice: 'ഡോക്ടർ നിർദേശിച്ച പ്രകാരം മാത്രം കഴിക്കുക.'
+    }
+  };
+
+  function getSimpleMedicineUse(medicine) {
+    const identity = `${medicine.name} ${medicine.genericName || ''} ${medicine.composition || ''}`.toLowerCase();
+    if (/paracetamol|acetaminophen/.test(identity)) return 'feverPain';
+    if (/pantoprazole/.test(identity) && /domperidone/.test(identity)) return 'acidityNausea';
+    if (/pantoprazole/.test(identity)) return 'acidity';
+    if (/metformin/.test(identity)) return 'diabetes';
+    if (/amoxicillin/.test(identity)) return 'infection';
+    if (/amlodipine/.test(identity)) return 'bloodPressure';
+    if (/cetirizine/.test(identity)) return 'allergy';
+    return 'unknown';
+  }
+
+  const medicineVoiceLanguageNames = {
+    'en-IN': 'English (India)',
+    'en-US': 'English (United States)',
+    'en-GB': 'English (United Kingdom)',
+    'te-IN': 'తెలుగు (Telugu)',
+    'ta-IN': 'தமிழ் (Tamil)',
+    'hi-IN': 'हिन्दी (Hindi)',
+    'kn-IN': 'ಕನ್ನಡ (Kannada)',
+    'ml-IN': 'മലയാളം (Malayalam)'
+  };
+  const requestedIndianVoiceLocales = ['te-IN', 'hi-IN', 'ta-IN', 'ml-IN', 'kn-IN'];
+
+  function refreshMedicineVoiceLanguages() {
+    if (!medicineLanguageSelect) return;
+    const voices = window.speechSynthesis?.getVoices() || [];
+    const availableLocales = [...new Set(voices.map(voice => voice.lang).filter(locale => {
+      const code = locale.split('-')[0].toLowerCase();
+      return code === 'en' || requestedIndianVoiceLocales.includes(locale);
+    }))];
+    const previousLanguage = medicineLanguageSelect.value;
+    const savedLanguage = localStorage.getItem('medscan_medicine_language');
+    const options = availableLocales.map(locale => {
+      const voice = voices.find(item => item.lang === locale);
+      const name = medicineVoiceLanguageNames[locale] || `English (${locale.split('-')[1]})`;
+      return { locale, label: `${name}${voice?.name ? ` — ${voice.name}` : ''}`, available: true };
+    });
+    const missingIndianOptions = requestedIndianVoiceLocales
+      .filter(locale => !availableLocales.includes(locale))
+      .map(locale => ({
+        locale,
+        label: `${medicineVoiceLanguageNames[locale]} — voice not installed`,
+        available: false
+      }));
+
+    medicineLanguageSelect.replaceChildren(...[...options, ...missingIndianOptions].map(({ locale, label, available }) => {
+      const option = document.createElement('option');
+      option.value = locale;
+      option.textContent = label;
+      option.disabled = !available;
+      return option;
+    }));
+
+    if (options.length === 0) {
+      accessibleMedicineVoiceStatus.textContent = 'No supported speech voices are available in this browser. Install a voice in your device settings, then reload this page.';
+      accessibleMedicineListenBtn.disabled = true;
+      return;
+    }
+
+    const preferredLocale = options.some(option => option.locale === savedLanguage)
+      ? savedLanguage
+      : options.some(option => option.locale === previousLanguage)
+        ? previousLanguage
+        : options.find(option => option.locale === 'en-IN')?.locale ||
+          options.find(option => option.locale === 'en-US')?.locale ||
+          options.find(option => option.locale.startsWith('en-'))?.locale ||
+          options[0].locale;
+    medicineLanguageSelect.value = preferredLocale;
+    localStorage.setItem('medscan_medicine_language', preferredLocale);
+    if (lastScanResult?.medicine?.datasetRecord) {
+      renderAccessibleMedicineNarration(lastScanResult.medicine);
+    } else {
+      updateAccessibleMedicineVoiceStatus();
+    }
+  }
+
+  function renderAccessibleMedicineNarration(medicine) {
+    if (!medicineLanguageSelect || !accessibleMedicineNarration) return;
+    const language = medicineLanguageSelect.value.toLowerCase();
+    const languageTemplate = language.startsWith('en-') ? 'en-IN' : language;
+    const phrases = medicineUsePhrases[languageTemplate];
+    if (!phrases) {
+      accessibleMedicineNarration.textContent = 'A simple explanation is not available in this language yet.';
+      updateAccessibleMedicineVoiceStatus();
+      return;
+    }
+    const expiry = medicine.expiryDate
+      ? `${phrases.expiry}${medicine.expiryDate}.`
+      : phrases.noExpiry;
+    accessibleMedicineNarration.textContent =
+      `${medicine.name}. ${phrases[getSimpleMedicineUse(medicine)]} ${expiry} ${phrases.advice}`;
+    updateAccessibleMedicineVoiceStatus();
+  }
+
+  function updateAccessibleMedicineVoiceStatus() {
+    if (!medicineLanguageSelect || !accessibleMedicineVoiceStatus || !accessibleMedicineListenBtn) return;
+    const language = medicineLanguageSelect.value.toLowerCase();
+    const hasVoice = window.speechSynthesis?.getVoices()
+      .some(voice => voice.lang.toLowerCase() === language);
+    accessibleMedicineListenBtn.disabled = !hasVoice;
+    accessibleMedicineListenBtn.classList.toggle('opacity-50', !hasVoice);
+    accessibleMedicineListenBtn.classList.toggle('cursor-not-allowed', !hasVoice);
+    accessibleMedicineVoiceStatus.textContent = hasVoice
+      ? 'Audio uses a voice installed in your browser or device. Medicine and ingredient names stay as printed on the label.'
+      : 'The selected voice is no longer available. Choose an available device voice or reload the page.';
+  }
+
+  medicineLanguageSelect?.addEventListener('change', () => {
+    localStorage.setItem('medscan_medicine_language', medicineLanguageSelect.value);
+    if (activeSpeechMode === 'dataset') {
+      window.speechHelper.stop();
+    }
+    if (lastScanResult?.medicine?.datasetRecord) {
+      renderAccessibleMedicineNarration(lastScanResult.medicine);
+    }
+  });
+  refreshMedicineVoiceLanguages();
+  window.speechSynthesis?.addEventListener('voiceschanged', refreshMedicineVoiceLanguages);
+
+  accessibleMedicineListenBtn?.addEventListener('click', () => {
+    const medicine = lastScanResult?.medicine;
+    if (!medicine?.datasetRecord || !window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+      accessibleMedicineVoiceStatus.textContent = 'Audio playback is not supported in this browser. Try a current version of Chrome or Edge.';
+      return;
+    }
+    activeSpeechMode = 'dataset';
+    window.speechHelper.toggleSpeech(accessibleMedicineNarration.textContent, {
+      lang: medicineLanguageSelect.value,
+      rate: 0.85
+    });
+  });
+
+  accessibleMedicineStopBtn?.addEventListener('click', () => {
+    if (activeSpeechMode === 'dataset') {
+      window.speechHelper.stop();
+    }
+  });
+
+  function renderExternalDrugInfo(drugInfo) {
+    const container = document.getElementById('externalDrugInfo');
+    const sectionsContainer = document.getElementById('externalDrugInfoSections');
+    const status = document.getElementById('externalDrugInfoStatus');
+    sectionsContainer.replaceChildren();
+    container.classList.remove('hidden');
+
+    if (!drugInfo || drugInfo.error) {
+      status.textContent = drugInfo?.error || 'No external drug-label information was returned.';
+      return;
+    }
+
+    if (!drugInfo.records?.length) {
+      status.textContent = 'No matching US FDA label was found for this ingredient. The medicine was matched using the local Indian medicine dataset.';
+      return;
+    }
+
+    status.textContent = drugInfo.disclaimer || 'These labels may not describe this exact product.';
+    const labels = [
+      ['indications', 'Uses / indications'],
+      ['dosage', 'Label dosage instructions'],
+      ['warnings', 'Warnings'],
+      ['adverseReactions', 'Reported adverse reactions']
+    ];
+
+    drugInfo.records.forEach(record => {
+      const heading = document.createElement('h4');
+      heading.className = 'text-xs font-bold text-cyan-300';
+      heading.textContent = `US label for ${record.ingredient}${record.brandNames?.length ? ` (${record.brandNames.join(', ')})` : ''}`;
+      sectionsContainer.appendChild(heading);
+
+      labels.forEach(([key, title]) => {
+        const text = record.sections?.[key];
+        if (!text) return;
+        const section = document.createElement('div');
+        section.className = 'text-xs text-slate-300';
+        const label = document.createElement('strong');
+        label.className = 'block text-slate-100 mb-1';
+        label.textContent = title;
+        const content = document.createElement('p');
+        content.className = 'leading-relaxed whitespace-pre-line';
+        content.textContent = text;
+        section.append(label, content);
+        sectionsContainer.appendChild(section);
+      });
+    });
+  }
+
   function displayDirectMedicine(med) {
     switchTab(tabMedicineScanner, medicineScannerView);
     welcomeHero.classList.add('hidden');
     resultsContainer.classList.remove('hidden');
+    document.getElementById('datasetMedicineSummary').classList.add('hidden');
+    document.getElementById('voiceAnnouncementPanel').classList.remove('hidden');
+    document.getElementById('medicineResultCard').classList.remove('hidden');
+    document.getElementById('prescriptionResultCard').classList.add('hidden');
+    addToCabinetBtn.classList.remove('hidden');
 
     const activeUser = window.authManager.getCurrentUser();
     const result = {
@@ -839,6 +1153,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ==========================================
   ttsBtn?.addEventListener('click', () => {
     if (!lastScanResult) return;
+    activeSpeechMode = 'regular';
     
     let speechText = '';
     if (lastScanResult.type === 'prescription') {
@@ -887,6 +1202,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Speech helper event listeners
   window.addEventListener('speech_start', () => {
+    if (activeSpeechMode === 'dataset') {
+      datasetSpeechPlaybackFailed = false;
+      accessibleMedicineListenBtn.textContent = 'Pause reading';
+      accessibleMedicineVoiceStatus.textContent = 'Reading the medicine summary aloud.';
+    }
     ttsBtn.classList.add('bg-rose-600', 'hover:bg-rose-500');
     ttsBtn.classList.remove('bg-cyan-600', 'hover:bg-cyan-500');
     ttsBtnText.textContent = 'Pause Speech';
@@ -897,23 +1217,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
   window.addEventListener('speech_pause', () => {
     ttsBtnText.textContent = 'Resume Speech';
+    if (activeSpeechMode === 'dataset') {
+      accessibleMedicineListenBtn.textContent = 'Resume reading';
+      accessibleMedicineVoiceStatus.textContent = 'Reading paused.';
+    }
     voiceSpeakingBadge.textContent = 'PAUSED';
     voiceSpeakingBadge.classList.remove('animate-pulse');
   });
 
   window.addEventListener('speech_resume', () => {
     ttsBtnText.textContent = 'Pause Speech';
+    if (activeSpeechMode === 'dataset') {
+      accessibleMedicineListenBtn.textContent = 'Pause reading';
+      accessibleMedicineVoiceStatus.textContent = 'Reading the medicine summary aloud.';
+    }
     voiceSpeakingBadge.textContent = 'SPEAKING';
     voiceSpeakingBadge.classList.add('animate-pulse');
   });
 
   window.addEventListener('speech_end', () => {
+    if (activeSpeechMode === 'dataset') {
+      accessibleMedicineListenBtn.textContent = '🔊 Listen to summary';
+      if (datasetSpeechPlaybackFailed) {
+        accessibleMedicineVoiceStatus.textContent = 'Audio could not be played. Check the selected language voice in your device settings.';
+        datasetSpeechPlaybackFailed = false;
+      } else {
+        updateAccessibleMedicineVoiceStatus();
+      }
+      activeSpeechMode = null;
+    }
     ttsBtn.classList.remove('bg-rose-600', 'hover:bg-rose-500');
     ttsBtn.classList.add('bg-cyan-600', 'hover:bg-cyan-500');
     ttsBtnText.textContent = 'Listen Aloud';
     ttsStopBtn.classList.add('hidden');
     audioWaveVisualizer.classList.add('hidden');
     voiceSpeakingBadge.classList.add('hidden');
+  });
+
+  window.addEventListener('speech_error', () => {
+    if (activeSpeechMode === 'dataset') {
+      datasetSpeechPlaybackFailed = true;
+    }
   });
 
   // Save to Cabinet from Medicine Scanner
@@ -1619,7 +1963,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function showToast(message) {
     const toast = document.createElement('div');
     toast.className = 'fixed bottom-5 right-5 z-50 bg-cyan-600 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-2xl transition-all duration-300 transform translate-y-2 opacity-0 flex items-center gap-2';
-    toast.innerHTML = `<span>✨</span><span>${message}</span>`;
+    const icon = document.createElement('span');
+    icon.textContent = '✨';
+    const text = document.createElement('span');
+    text.textContent = message;
+    toast.append(icon, text);
     document.body.appendChild(toast);
 
     setTimeout(() => {
